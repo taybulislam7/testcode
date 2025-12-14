@@ -31,7 +31,6 @@
             {{ isLoadingList ? 'Refreshing...' : 'Refresh' }}
           </button>
 
-          <!-- hidden CT folder input (folder upload) -->
           <input
             ref="ctFolderInput"
             type="file"
@@ -62,7 +61,6 @@
             Upload Seg
           </button>
 
-          <!-- hidden Seg file input (single file upload) -->
           <input
             ref="segFileInput"
             type="file"
@@ -94,7 +92,16 @@
           <span>Axial (z)</span>
           <span class="index-label">z = {{ axialIndex }} / {{ shape.depth - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <!-- ROI control panel (Axial) -->
+        <div class="roi-toolbar">
+          <button class="roi-btn" @click="undoRoi('axial')" :disabled="!canUndo('axial')">Undo</button>
+          <button class="roi-btn" @click="redoRoi('axial')" :disabled="!canRedo('axial')">Redo</button>
+          <button class="roi-btn" @click="clearRois('axial')" :disabled="!hasRois('axial')">Clear</button>
+          <button class="roi-btn primary" @click="saveViewAsPng('axial')" :disabled="!axialImg">Save PNG</button>
+        </div>
+
+        <div class="slice-frame" ref="axialFrame">
           <img
             v-if="axialImg"
             :src="axialImg"
@@ -107,7 +114,6 @@
             class="slice-img overlay"
             :style="{ transform: 'scale(' + zoomAxial + ')' }"
           />
-          <!-- ROI canvas (axial) -->
           <canvas
             ref="axialCanvas"
             class="roi-canvas"
@@ -117,6 +123,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Axial (z)</label>
           <input
@@ -145,7 +152,16 @@
           <span>Sagittal (x)</span>
           <span class="index-label">x = {{ sagittalIndex }} / {{ shape.width - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <!-- ROI control panel (Sagittal) -->
+        <div class="roi-toolbar">
+          <button class="roi-btn" @click="undoRoi('sagittal')" :disabled="!canUndo('sagittal')">Undo</button>
+          <button class="roi-btn" @click="redoRoi('sagittal')" :disabled="!canRedo('sagittal')">Redo</button>
+          <button class="roi-btn" @click="clearRois('sagittal')" :disabled="!hasRois('sagittal')">Clear</button>
+          <button class="roi-btn primary" @click="saveViewAsPng('sagittal')" :disabled="!sagittalImg">Save PNG</button>
+        </div>
+
+        <div class="slice-frame" ref="sagittalFrame">
           <img
             v-if="sagittalImg"
             :src="sagittalImg"
@@ -158,7 +174,6 @@
             class="slice-img overlay sagittal-img"
             :style="{ transform: 'translate(-50%, -50%) scaleY(-1) scale(' + zoomSagittal + ')' }"
           />
-          <!-- ROI canvas (sagittal) -->
           <canvas
             ref="sagittalCanvas"
             class="roi-canvas"
@@ -168,6 +183,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Sagittal (x)</label>
           <input
@@ -196,7 +212,16 @@
           <span>Coronal (y)</span>
           <span class="index-label">y = {{ coronalIndex }} / {{ shape.height - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <!-- ROI control panel (Coronal) -->
+        <div class="roi-toolbar">
+          <button class="roi-btn" @click="undoRoi('coronal')" :disabled="!canUndo('coronal')">Undo</button>
+          <button class="roi-btn" @click="redoRoi('coronal')" :disabled="!canRedo('coronal')">Redo</button>
+          <button class="roi-btn" @click="clearRois('coronal')" :disabled="!hasRois('coronal')">Clear</button>
+          <button class="roi-btn primary" @click="saveViewAsPng('coronal')" :disabled="!coronalImg">Save PNG</button>
+        </div>
+
+        <div class="slice-frame" ref="coronalFrame">
           <img
             v-if="coronalImg"
             :src="coronalImg"
@@ -209,7 +234,6 @@
             class="slice-img overlay coronal-img"
             :style="{ transform: 'translate(-50%, -50%) scaleY(-1) scale(' + zoomCoronal + ')' }"
           />
-          <!-- ROI canvas (coronal) -->
           <canvas
             ref="coronalCanvas"
             class="roi-canvas"
@@ -219,6 +243,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Coronal (y)</label>
           <input
@@ -241,7 +266,7 @@
         </div>
       </div>
 
-      <!-- 3D segmentation -->
+      <!-- 3D -->
       <div class="pane">
         <div class="pane-header">
           <span>3D Segmentation</span>
@@ -352,7 +377,7 @@ let mesh = null
 let controls = null
 let animationId = null
 
-// --- Slice planes in 3D (CT only) ---
+// CT planes in 3D
 let axialPlane = null
 let sagittalPlane = null
 let coronalPlane = null
@@ -365,33 +390,10 @@ const axialTexCanvas = document.createElement('canvas')
 const sagittalTexCanvas = document.createElement('canvas')
 const coronalTexCanvas = document.createElement('canvas')
 
-// --- TRUE mesh clipping planes ---
-const clipAxial = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0)     // z
-const clipCoronal = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)   // y
-const clipSagittal = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0)  // x
-
-function getVolumeCenters() {
-  if (!shape.value) return { cx: 0, cy: 0, cz: 0, W: 0, H: 0, D: 0 }
-  const D = shape.value.depth
-  const H = shape.value.height
-  const W = shape.value.width
-  const cx = (W - 1) / 2
-  const cy = (H - 1) / 2
-  const cz = (D - 1) / 2
-  return { cx, cy, cz, W, H, D }
-}
-
-function updateMeshClippingPlanes() {
-  if (!shape.value || !mesh) return
-  const { cx, cy, cz } = getVolumeCenters()
-
-  // slice index -> centered space
-  clipAxial.constant = axialIndex.value - cz
-  clipCoronal.constant = coronalIndex.value - cy
-  clipSagittal.constant = sagittalIndex.value - cx
-
-  if (mesh.material) mesh.material.needsUpdate = true
-}
+// TRUE clipping planes
+const clipAxial = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0)
+const clipCoronal = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)
+const clipSagittal = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0)
 
 /* ---------------- ROI state ---------------- */
 
@@ -399,9 +401,18 @@ const axialCanvas = ref(null)
 const sagittalCanvas = ref(null)
 const coronalCanvas = ref(null)
 
+const axialFrame = ref(null)
+const sagittalFrame = ref(null)
+const coronalFrame = ref(null)
+
 const axialRois = ref([])
 const sagittalRois = ref([])
 const coronalRois = ref([])
+
+// Undo/Redo stacks (per view)
+const axialRedo = ref([])
+const sagittalRedo = ref([])
+const coronalRedo = ref([])
 
 const isDrawing = ref(false)
 const currentRoi = ref([])
@@ -424,11 +435,30 @@ function loadImageDataUrl(dataUrl) {
   })
 }
 
+function getVolumeCenters() {
+  if (!shape.value) return { cx: 0, cy: 0, cz: 0, W: 0, H: 0, D: 0 }
+  const D = shape.value.depth
+  const H = shape.value.height
+  const W = shape.value.width
+  const cx = (W - 1) / 2
+  const cy = (H - 1) / 2
+  const cz = (D - 1) / 2
+  return { cx, cy, cz, W, H, D }
+}
+
+function updateMeshClippingPlanes() {
+  if (!shape.value || !mesh) return
+  const { cx, cy, cz } = getVolumeCenters()
+  clipAxial.constant = axialIndex.value - cz
+  clipCoronal.constant = coronalIndex.value - cy
+  clipSagittal.constant = sagittalIndex.value - cx
+  mesh.material.needsUpdate = true
+}
+
 /**
- * ✅ 3D planes show ONLY CT (no seg overlay)
- * We keep segDataUrl arg so your calls don't break, but we ignore it.
+ * 3D planes show ONLY CT (no seg drawn)
  */
-async function updatePlaneTexture(axis, ctDataUrl /* segDataUrl ignored */) {
+async function updatePlaneTexture(axis, ctDataUrl) {
   const canvas =
     axis === 'axial' ? axialTexCanvas :
     axis === 'sagittal' ? sagittalTexCanvas :
@@ -469,15 +499,9 @@ function updatePlanePosition(axis, index) {
   if (!shape.value) return
   const { cx, cy, cz } = getVolumeCenters()
 
-  if (axis === 'axial' && axialPlane) {
-    axialPlane.position.set(0, 0, index - cz)
-  }
-  if (axis === 'coronal' && coronalPlane) {
-    coronalPlane.position.set(0, index - cy, 0)
-  }
-  if (axis === 'sagittal' && sagittalPlane) {
-    sagittalPlane.position.set(index - cx, 0, 0)
-  }
+  if (axis === 'axial' && axialPlane) axialPlane.position.set(0, 0, index - cz)
+  if (axis === 'coronal' && coronalPlane) coronalPlane.position.set(0, index - cy, 0)
+  if (axis === 'sagittal' && sagittalPlane) sagittalPlane.position.set(index - cx, 0, 0)
 }
 
 function disposePlane(p) {
@@ -490,10 +514,10 @@ function disposePlane(p) {
 function rebuildSlicePlanes() {
   if (!scene || !shape.value) return
 
-  // remove old planes cleanly
   if (axialPlane) { scene.remove(axialPlane); disposePlane(axialPlane) }
   if (coronalPlane) { scene.remove(coronalPlane); disposePlane(coronalPlane) }
   if (sagittalPlane) { scene.remove(sagittalPlane); disposePlane(sagittalPlane) }
+
   axialPlane = coronalPlane = sagittalPlane = null
 
   const { W, H, D } = getVolumeCenters()
@@ -511,35 +535,30 @@ function rebuildSlicePlanes() {
   const matCommon = (tex) => new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    opacity: 0.40,         // ✅ your requested opacity
-    depthWrite: false,     // prevents weird z-fighting with mesh
+    opacity: 0.30,
+    depthWrite: false,
     depthTest: true,
     side: THREE.DoubleSide
   })
 
-  // Axial: XY plane (W x H), move along Z
   axialPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), matCommon(axialTex))
   axialPlane.renderOrder = 2
   scene.add(axialPlane)
 
-  // Coronal: XZ plane (W x D), move along Y
   coronalPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, D), matCommon(coronalTex))
   coronalPlane.rotation.x = -Math.PI / 2
   coronalPlane.renderOrder = 2
   scene.add(coronalPlane)
 
-  // Sagittal: YZ plane (D x H), move along X
   sagittalPlane = new THREE.Mesh(new THREE.PlaneGeometry(D, H), matCommon(sagittalTex))
   sagittalPlane.rotation.y = Math.PI / 2
   sagittalPlane.renderOrder = 2
   scene.add(sagittalPlane)
 
-  // positions
   updatePlanePosition('axial', axialIndex.value)
   updatePlanePosition('coronal', coronalIndex.value)
   updatePlanePosition('sagittal', sagittalIndex.value)
 
-  // textures (CT only)
   updatePlaneTexture('axial', axialImg.value)
   updatePlaneTexture('coronal', coronalImg.value)
   updatePlaneTexture('sagittal', sagittalImg.value)
@@ -552,9 +571,7 @@ async function fetchItems() {
     isLoadingList.value = true
     const res = await axios.get('http://localhost:5000/list-items')
     items.value = Array.isArray(res.data.items) ? res.data.items : []
-    if (!selectedPath.value && items.value.length) {
-      selectedPath.value = items.value[0].path
-    }
+    if (!selectedPath.value && items.value.length) selectedPath.value = items.value[0].path
   } catch (err) {
     console.error(err)
     statusMessage.value = 'Failed to load list: ' + err.message
@@ -592,19 +609,15 @@ async function loadVolume() {
     sagittalSegImg.value = b64ToDataUrl(res.data.sagittal_seg_png)
     coronalSegImg.value = b64ToDataUrl(res.data.coronal_seg_png)
 
-    axialRois.value = []
-    sagittalRois.value = []
-    coronalRois.value = []
+    // reset ROI + redo stacks
+    axialRois.value = []; sagittalRois.value = []; coronalRois.value = []
+    axialRedo.value = []; sagittalRedo.value = []; coronalRedo.value = []
 
     await nextTick()
     resizeAllRoiCanvases()
 
     initThreeIfNeeded()
-
-    // ✅ bring back realtime CT planes in 3D
     rebuildSlicePlanes()
-
-    // ✅ if mesh already loaded, keep clipping synced
     updateMeshClippingPlanes()
 
     statusMessage.value = 'CT volume loaded.'
@@ -638,7 +651,6 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
     resizeAllRoiCanvases()
     redrawRois(axis)
 
-    // ✅ update CT planes in 3D (realtime)
     if (axis === 'axial') {
       updatePlanePosition('axial', index)
       await updatePlaneTexture('axial', axialImg.value)
@@ -650,7 +662,6 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
       await updatePlaneTexture('coronal', coronalImg.value)
     }
 
-    // ✅ true mesh clipping (realtime)
     updateMeshClippingPlanes()
   } catch (err) {
     console.error(err)
@@ -658,25 +669,139 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
   }
 }
 
-function onAxialChange() {
-  fetchSlice('axial', axialIndex.value, axialImg, axialSegImg)
+function onAxialChange() { fetchSlice('axial', axialIndex.value, axialImg, axialSegImg) }
+function onSagittalChange() { fetchSlice('sagittal', sagittalIndex.value, sagittalImg, sagittalSegImg) }
+function onCoronalChange() { fetchSlice('coronal', coronalIndex.value, coronalImg, coronalSegImg) }
+
+/* ---------------- ROI helpers ---------------- */
+
+function getRoisRef(view) {
+  if (view === 'axial') return axialRois
+  if (view === 'sagittal') return sagittalRois
+  return coronalRois
 }
-function onSagittalChange() {
-  fetchSlice('sagittal', sagittalIndex.value, sagittalImg, sagittalSegImg)
+function getRedoRef(view) {
+  if (view === 'axial') return axialRedo
+  if (view === 'sagittal') return sagittalRedo
+  return coronalRedo
 }
-function onCoronalChange() {
-  fetchSlice('coronal', coronalIndex.value, coronalImg, coronalSegImg)
+function getCanvasRef(view) {
+  if (view === 'axial') return axialCanvas
+  if (view === 'sagittal') return sagittalCanvas
+  return coronalCanvas
+}
+
+function hasRois(view) {
+  return (getRoisRef(view).value || []).length > 0
+}
+function canUndo(view) {
+  return (getRoisRef(view).value || []).length > 0
+}
+function canRedo(view) {
+  return (getRedoRef(view).value || []).length > 0
+}
+
+function undoRoi(view) {
+  const roisRef = getRoisRef(view)
+  const redoRef = getRedoRef(view)
+  if (!roisRef.value.length) return
+  const last = roisRef.value[roisRef.value.length - 1]
+  roisRef.value = roisRef.value.slice(0, -1)
+  redoRef.value = [...redoRef.value, last]
+  redrawRois(view)
+}
+
+function redoRoi(view) {
+  const roisRef = getRoisRef(view)
+  const redoRef = getRedoRef(view)
+  if (!redoRef.value.length) return
+  const last = redoRef.value[redoRef.value.length - 1]
+  redoRef.value = redoRef.value.slice(0, -1)
+  roisRef.value = [...roisRef.value, last]
+  redrawRois(view)
+}
+
+function clearRois(view) {
+  const roisRef = getRoisRef(view)
+  const redoRef = getRedoRef(view)
+  if (!roisRef.value.length) return
+  redoRef.value = []
+  roisRef.value = []
+  redrawRois(view)
+}
+
+/**
+ * Save PNG = CT + Seg overlay + ROI (exactly what user sees)
+ */
+async function saveViewAsPng(view) {
+  const canvasRef = getCanvasRef(view)
+  const canvas = canvasRef.value
+  if (!canvas) return
+
+  const w = canvas.width
+  const h = canvas.height
+
+  const out = document.createElement('canvas')
+  out.width = w
+  out.height = h
+  const ctx = out.getContext('2d')
+
+  // pick CT + seg + transform rules per view
+  let ctUrl = null, segUrl = null, transform = null
+  if (view === 'axial') {
+    ctUrl = axialImg.value
+    segUrl = axialSegImg.value
+    transform = (ctx) => {
+      // same as img style: scale(zoomAxial) but since we draw to full canvas,
+      // we mimic visually by drawing centered scaled image.
+      const z = zoomAxial.value
+      ctx.translate(w / 2, h / 2)
+      ctx.scale(z, z)
+      ctx.translate(-w / 2, -h / 2)
+    }
+  } else if (view === 'sagittal') {
+    ctUrl = sagittalImg.value
+    segUrl = sagittalSegImg.value
+    transform = (ctx) => {
+      const z = zoomSagittal.value
+      // match: translate(-50%,-50%) scaleY(-1) scale(z) with oversize
+      ctx.translate(w / 2, h / 2)
+      ctx.scale(z, -z)
+      ctx.translate(-w / 2, -h / 2)
+    }
+  } else {
+    ctUrl = coronalImg.value
+    segUrl = coronalSegImg.value
+    transform = (ctx) => {
+      const z = zoomCoronal.value
+      ctx.translate(w / 2, h / 2)
+      ctx.scale(z, -z)
+      ctx.translate(-w / 2, -h / 2)
+    }
+  }
+
+  const ctImg = await loadImageDataUrl(ctUrl)
+  const segImg = await loadImageDataUrl(segUrl)
+
+  ctx.save()
+  if (transform) transform(ctx)
+  if (ctImg) ctx.drawImage(ctImg, 0, 0, w, h)
+  if (segImg) ctx.drawImage(segImg, 0, 0, w, h)
+  ctx.restore()
+
+  // draw ROI (already in correct canvas coordinates)
+  ctx.drawImage(canvas, 0, 0, w, h)
+
+  const a = document.createElement('a')
+  a.href = out.toDataURL('image/png')
+  a.download = `${view}_slice.png`
+  a.click()
 }
 
 /* ---------------- ROI drawing ---------------- */
 
 function getCanvasAndCtx(view) {
-  let canvasRef
-  if (view === 'axial') canvasRef = axialCanvas
-  else if (view === 'sagittal') canvasRef = sagittalCanvas
-  else canvasRef = coronalCanvas
-
-  const canvas = canvasRef.value
+  const canvas = getCanvasRef(view).value
   if (!canvas) return { canvas: null, ctx: null }
   return { canvas, ctx: canvas.getContext('2d') }
 }
@@ -698,20 +823,13 @@ function resizeAllRoiCanvases() {
   redrawRois('coronal')
 }
 
-function getRoisRef(view) {
-  if (view === 'axial') return axialRois
-  if (view === 'sagittal') return sagittalRois
-  return coronalRois
-}
-
 function redrawRois(view) {
   const { canvas, ctx } = getCanvasAndCtx(view)
   if (!canvas || !ctx) return
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const roisRef = getRoisRef(view)
-  const rois = roisRef.value || []
+  const rois = getRoisRef(view).value || []
 
   ctx.lineWidth = 2
   ctx.strokeStyle = '#22c55e'
@@ -721,9 +839,7 @@ function redrawRois(view) {
     if (!path || path.length < 2) continue
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) {
-      ctx.lineTo(path[i].x, path[i].y)
-    }
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
     ctx.closePath()
     ctx.stroke()
     ctx.fill()
@@ -733,9 +849,7 @@ function redrawRois(view) {
     const path = currentRoi.value
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) {
-      ctx.lineTo(path[i].x, path[i].y)
-    }
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
     ctx.stroke()
   }
 }
@@ -752,7 +866,6 @@ function onRoiMouseDown(view, event) {
   isDrawing.value = true
   activeView.value = view
   currentRoi.value = [{ x, y }]
-
   redrawRois(view)
 }
 
@@ -772,9 +885,14 @@ function onRoiMouseMove(event) {
 function onRoiMouseUp() {
   if (!isDrawing.value || !activeView.value) return
   const roisRef = getRoisRef(activeView.value)
+  const redoRef = getRedoRef(activeView.value)
+
   if (currentRoi.value.length > 2) {
     roisRef.value = [...roisRef.value, [...currentRoi.value]]
+    // new action invalidates redo
+    redoRef.value = []
   }
+
   isDrawing.value = false
   redrawRois(activeView.value)
   activeView.value = null
@@ -798,10 +916,7 @@ function initThreeIfNeeded() {
 
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(clientWidth, clientHeight)
-
-  // ✅ required for true clipping
   renderer.localClippingEnabled = true
-
   container.appendChild(renderer.domElement)
 
   const light1 = new THREE.DirectionalLight(0xffffff, 0.9)
@@ -833,10 +948,9 @@ function onWindowResize() {
   resizeAllRoiCanvases()
   if (!renderer || !camera || !threeContainer.value) return
   const container = threeContainer.value
-  const { clientWidth, clientHeight } = container
-  camera.aspect = clientWidth / clientHeight
+  camera.aspect = container.clientWidth / container.clientHeight
   camera.updateProjectionMatrix()
-  renderer.setSize(clientWidth, clientHeight)
+  renderer.setSize(container.clientWidth, container.clientHeight)
 }
 
 async function loadMesh() {
@@ -868,7 +982,6 @@ async function loadMesh() {
       const vb = vertices[b]
       const vc = vertices[c]
 
-      // map (z,y,x) -> (x,y,z)
       positions[idx++] = va[2]
       positions[idx++] = va[1]
       positions[idx++] = va[0]
@@ -891,28 +1004,24 @@ async function loadMesh() {
       mesh.material.dispose()
     }
 
-    // ✅ IMPORTANT: center mesh by VOLUME center (so it aligns with slice indices + planes)
     const { cx, cy, cz } = getVolumeCenters()
+
     const mat = new THREE.MeshStandardMaterial({
       color: 0x22c55e,
       metalness: 0.1,
       roughness: 0.5,
       transparent: true,
       opacity: 0.85,
-
-      // ✅ true clipping
       clippingPlanes: [clipAxial, clipCoronal, clipSagittal],
       clipIntersection: true
     })
 
     mesh = new THREE.Mesh(geometry, mat)
-    mesh.position.set(-cx, -cy, -cz) // align with volume-centered space
+    mesh.position.set(-cx, -cy, -cz)
     scene.add(mesh)
 
-    // ✅ ensure planes exist too (the combination part)
+    // keep the planes feature
     rebuildSlicePlanes()
-
-    // ✅ sync clipping to current slider positions
     updateMeshClippingPlanes()
 
     statusMessage.value = '3D mesh loaded.'
@@ -1012,17 +1121,12 @@ onBeforeUnmount(() => {
   font-size: 0.85rem;
 }
 
-.select-input:focus {
-  border-color: #2563eb;
-  outline: none;
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.35);
-}
-
 .small-btn,
 .primary-btn,
-.secondary-btn {
+.secondary-btn,
+.roi-btn {
   border-radius: 999px;
-  padding: 7px 14px;
+  padding: 7px 12px;
   font-size: 0.8rem;
   cursor: pointer;
   border: none;
@@ -1032,10 +1136,6 @@ onBeforeUnmount(() => {
   background: #111827;
   color: #e5e7eb;
   border: 1px solid #1f2937;
-}
-
-.small-btn:hover {
-  background: #1f2937;
 }
 
 .primary-btn {
@@ -1051,7 +1151,9 @@ onBeforeUnmount(() => {
 }
 
 .primary-btn:disabled,
-.secondary-btn:disabled {
+.secondary-btn:disabled,
+.roi-btn:disabled,
+.small-btn:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -1065,8 +1167,6 @@ onBeforeUnmount(() => {
 .hidden-input {
   display: none;
 }
-
-/* layout panes */
 
 .grid-2x2 {
   display: grid;
@@ -1089,11 +1189,27 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   font-size: 0.8rem;
   color: #cbd5f5;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .index-label {
   color: #6b7280;
+}
+
+.roi-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.roi-btn {
+  background: #111827;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+}
+.roi-btn.primary {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border: none;
 }
 
 .slice-frame {
@@ -1159,7 +1275,6 @@ onBeforeUnmount(() => {
   background: #020617;
 }
 
-/* ROI canvas overlay */
 .roi-canvas {
   position: absolute;
   inset: 0;
