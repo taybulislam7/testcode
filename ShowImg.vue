@@ -1,4 +1,4 @@
-#showimg.vue(3D slicer)
+#showImg-3D slicer
 
 <template>
   <div class="viewer-page">
@@ -96,7 +96,8 @@
           <span>Axial (z)</span>
           <span class="index-label">z = {{ axialIndex }} / {{ shape.depth - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <div class="slice-frame" ref="axialFrame">
           <img
             v-if="axialImg"
             :src="axialImg"
@@ -119,6 +120,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Axial (z)</label>
           <input
@@ -139,6 +141,14 @@
             v-model.number="zoomAxial"
           />
         </div>
+
+        <!-- ROI controls (axial) -->
+        <div class="row" style="margin-top: 8px;">
+          <button class="small-btn" @click="undoRoi('axial')" :disabled="!canUndo('axial')">Undo</button>
+          <button class="small-btn" @click="redoRoi('axial')" :disabled="!canRedo('axial')">Redo</button>
+          <button class="small-btn" @click="clearRoi('axial')" :disabled="axialRois.length === 0">Clear</button>
+          <button class="secondary-btn" @click="exportView('axial')" :disabled="!axialImg">Export</button>
+        </div>
       </div>
 
       <!-- Sagittal -->
@@ -147,7 +157,8 @@
           <span>Sagittal (x)</span>
           <span class="index-label">x = {{ sagittalIndex }} / {{ shape.width - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <div class="slice-frame" ref="sagittalFrame">
           <img
             v-if="sagittalImg"
             :src="sagittalImg"
@@ -170,6 +181,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Sagittal (x)</label>
           <input
@@ -190,6 +202,14 @@
             v-model.number="zoomSagittal"
           />
         </div>
+
+        <!-- ROI controls (sagittal) -->
+        <div class="row" style="margin-top: 8px;">
+          <button class="small-btn" @click="undoRoi('sagittal')" :disabled="!canUndo('sagittal')">Undo</button>
+          <button class="small-btn" @click="redoRoi('sagittal')" :disabled="!canRedo('sagittal')">Redo</button>
+          <button class="small-btn" @click="clearRoi('sagittal')" :disabled="sagittalRois.length === 0">Clear</button>
+          <button class="secondary-btn" @click="exportView('sagittal')" :disabled="!sagittalImg">Export</button>
+        </div>
       </div>
 
       <!-- Coronal -->
@@ -198,7 +218,8 @@
           <span>Coronal (y)</span>
           <span class="index-label">y = {{ coronalIndex }} / {{ shape.height - 1 }}</span>
         </div>
-        <div class="slice-frame">
+
+        <div class="slice-frame" ref="coronalFrame">
           <img
             v-if="coronalImg"
             :src="coronalImg"
@@ -221,6 +242,7 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
+
         <div class="slider-row">
           <label class="slider-label">Coronal (y)</label>
           <input
@@ -240,6 +262,14 @@
             step="0.01"
             v-model.number="zoomCoronal"
           />
+        </div>
+
+        <!-- ROI controls (coronal) -->
+        <div class="row" style="margin-top: 8px;">
+          <button class="small-btn" @click="undoRoi('coronal')" :disabled="!canUndo('coronal')">Undo</button>
+          <button class="small-btn" @click="redoRoi('coronal')" :disabled="!canRedo('coronal')">Redo</button>
+          <button class="small-btn" @click="clearRoi('coronal')" :disabled="coronalRois.length === 0">Clear</button>
+          <button class="secondary-btn" @click="exportView('coronal')" :disabled="!coronalImg">Export</button>
         </div>
       </div>
 
@@ -356,6 +386,10 @@ let animationId = null
 
 /* ---------------- ROI state ---------------- */
 
+const axialFrame = ref(null)
+const sagittalFrame = ref(null)
+const coronalFrame = ref(null)
+
 const axialCanvas = ref(null)
 const sagittalCanvas = ref(null)
 const coronalCanvas = ref(null)
@@ -367,6 +401,71 @@ const coronalRois = ref([])
 const isDrawing = ref(false)
 const currentRoi = ref([])
 const activeView = ref(null)
+
+/* ---- Undo/Redo stacks (NEW) ---- */
+const undoStack = ref({
+  axial: [],
+  sagittal: [],
+  coronal: []
+})
+const redoStack = ref({
+  axial: [],
+  sagittal: [],
+  coronal: []
+})
+
+function snapshotRois(view) {
+  // deep copy of polygons
+  if (view === 'axial') return JSON.stringify(axialRois.value)
+  if (view === 'sagittal') return JSON.stringify(sagittalRois.value)
+  return JSON.stringify(coronalRois.value)
+}
+
+function restoreRois(view, snapshot) {
+  const arr = snapshot ? JSON.parse(snapshot) : []
+  if (view === 'axial') axialRois.value = arr
+  else if (view === 'sagittal') sagittalRois.value = arr
+  else coronalRois.value = arr
+  nextTick(() => {
+    resizeAllRoiCanvases()
+    redrawRois(view)
+  })
+}
+
+function pushUndo(view) {
+  undoStack.value[view].push(snapshotRois(view))
+  // new action => clear redo
+  redoStack.value[view] = []
+}
+
+function canUndo(view) {
+  return undoStack.value[view].length > 0
+}
+function canRedo(view) {
+  return redoStack.value[view].length > 0
+}
+
+function undoRoi(view) {
+  if (!canUndo(view)) return
+  redoStack.value[view].push(snapshotRois(view))
+  const prev = undoStack.value[view].pop()
+  restoreRois(view, prev)
+}
+
+function redoRoi(view) {
+  if (!canRedo(view)) return
+  undoStack.value[view].push(snapshotRois(view))
+  const nxt = redoStack.value[view].pop()
+  restoreRois(view, nxt)
+}
+
+function clearRoi(view) {
+  pushUndo(view)
+  if (view === 'axial') axialRois.value = []
+  else if (view === 'sagittal') sagittalRois.value = []
+  else coronalRois.value = []
+  redrawRois(view)
+}
 
 /* ---------------- helpers ---------------- */
 
@@ -422,9 +521,13 @@ async function loadVolume() {
     sagittalSegImg.value = b64ToDataUrl(res.data.sagittal_seg_png)
     coronalSegImg.value = b64ToDataUrl(res.data.coronal_seg_png)
 
+    // reset ROIs + history
     axialRois.value = []
     sagittalRois.value = []
     coronalRois.value = []
+
+    undoStack.value = { axial: [], sagittal: [], coronal: [] }
+    redoStack.value = { axial: [], sagittal: [], coronal: [] }
 
     await nextTick()
     resizeAllRoiCanvases()
@@ -527,9 +630,7 @@ function redrawRois(view) {
     if (!path || path.length < 2) continue
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) {
-      ctx.lineTo(path[i].x, path[i].y)
-    }
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
     ctx.closePath()
     ctx.stroke()
     ctx.fill()
@@ -539,9 +640,7 @@ function redrawRois(view) {
     const path = currentRoi.value
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) {
-      ctx.lineTo(path[i].x, path[i].y)
-    }
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
     ctx.stroke()
   }
 }
@@ -550,6 +649,9 @@ function onRoiMouseDown(view, event) {
   if (event.button !== 0) return
   const { canvas } = getCanvasAndCtx(view)
   if (!canvas) return
+
+  // snapshot BEFORE starting a new ROI (NEW)
+  pushUndo(view)
 
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
@@ -578,13 +680,105 @@ function onRoiMouseMove(event) {
 function onRoiMouseUp() {
   if (!isDrawing.value || !activeView.value) return
   const roisRef = getRoisRef(activeView.value)
+
   if (currentRoi.value.length > 2) {
     roisRef.value = [...roisRef.value, [...currentRoi.value]]
+  } else {
+    // if user clicked tiny ROI, revert undo snapshot (optional)
+    // easiest: just allow undo to bring back anyway
   }
+
   isDrawing.value = false
   redrawRois(activeView.value)
+
   activeView.value = null
   currentRoi.value = []
+}
+
+/* ---------------- Export (NEW) ---------------- */
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
+
+function getFrameSize(view) {
+  const frame =
+    view === 'axial' ? axialFrame.value :
+    view === 'sagittal' ? sagittalFrame.value :
+    coronalFrame.value
+  if (!frame) return { w: 0, h: 0 }
+  return { w: frame.clientWidth, h: frame.clientHeight }
+}
+
+function getCtSegSrc(view) {
+  if (view === 'axial') return { ct: axialImg.value, seg: axialSegImg.value, zoom: zoomAxial.value }
+  if (view === 'sagittal') return { ct: sagittalImg.value, seg: sagittalSegImg.value, zoom: zoomSagittal.value }
+  return { ct: coronalImg.value, seg: coronalSegImg.value, zoom: zoomCoronal.value }
+}
+
+function getRoiCanvas(view) {
+  if (view === 'axial') return axialCanvas.value
+  if (view === 'sagittal') return sagittalCanvas.value
+  return coronalCanvas.value
+}
+
+async function exportView(view) {
+  try {
+    const { w, h } = getFrameSize(view)
+    if (!w || !h) return
+
+    const { ct, seg, zoom } = getCtSegSrc(view)
+    if (!ct) return
+
+    const out = document.createElement('canvas')
+    out.width = w
+    out.height = h
+    const ctx = out.getContext('2d')
+
+    // draw CT + seg with same "visual" transforms
+    const ctImg = await loadImage(ct)
+    let segImg = null
+    if (seg) segImg = await loadImage(seg)
+
+    if (view === 'axial') {
+      // centered scale(zoom)
+      ctx.save()
+      ctx.translate(w / 2, h / 2)
+      ctx.scale(zoom, zoom)
+      ctx.drawImage(ctImg, -w / 2, -h / 2, w, h)
+      if (segImg) ctx.drawImage(segImg, -w / 2, -h / 2, w, h)
+      ctx.restore()
+    } else {
+      // sagittal/coronal: translate(-50%,-50%), width=300%, height=200%, scaleY(-1), scale(zoom)
+      const drawW = w * 3
+      const drawH = h * 2
+
+      ctx.save()
+      ctx.translate(w / 2, h / 2)
+      ctx.scale(zoom, zoom)
+      ctx.scale(1, -1) // scaleY(-1)
+      ctx.drawImage(ctImg, -drawW / 2, -drawH / 2, drawW, drawH)
+      if (segImg) ctx.drawImage(segImg, -drawW / 2, -drawH / 2, drawW, drawH)
+      ctx.restore()
+    }
+
+    // ROI canvas is already "screen coords" -> draw on top
+    const roiC = getRoiCanvas(view)
+    if (roiC) ctx.drawImage(roiC, 0, 0, w, h)
+
+    const a = document.createElement('a')
+    a.download = `${view}_export.png`
+    a.href = out.toDataURL('image/png')
+    a.click()
+  } catch (err) {
+    console.error(err)
+    statusMessage.value = 'Export failed: ' + err.message
+  }
 }
 
 /* ---------------- 3D viewer ---------------- */
