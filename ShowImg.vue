@@ -352,7 +352,7 @@ let mesh = null
 let controls = null
 let animationId = null
 
-// NEW: slice planes + textures
+// --- Slice planes in 3D (CT only) ---
 let axialPlane = null
 let sagittalPlane = null
 let coronalPlane = null
@@ -361,10 +361,37 @@ let axialTex = null
 let sagittalTex = null
 let coronalTex = null
 
-// cached offscreen canvases for textures (faster realtime)
 const axialTexCanvas = document.createElement('canvas')
 const sagittalTexCanvas = document.createElement('canvas')
 const coronalTexCanvas = document.createElement('canvas')
+
+// --- TRUE mesh clipping planes ---
+const clipAxial = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0)     // z
+const clipCoronal = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)   // y
+const clipSagittal = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0)  // x
+
+function getVolumeCenters() {
+  if (!shape.value) return { cx: 0, cy: 0, cz: 0, W: 0, H: 0, D: 0 }
+  const D = shape.value.depth
+  const H = shape.value.height
+  const W = shape.value.width
+  const cx = (W - 1) / 2
+  const cy = (H - 1) / 2
+  const cz = (D - 1) / 2
+  return { cx, cy, cz, W, H, D }
+}
+
+function updateMeshClippingPlanes() {
+  if (!shape.value || !mesh) return
+  const { cx, cy, cz } = getVolumeCenters()
+
+  // slice index -> centered space
+  clipAxial.constant = axialIndex.value - cz
+  clipCoronal.constant = coronalIndex.value - cy
+  clipSagittal.constant = sagittalIndex.value - cx
+
+  if (mesh.material) mesh.material.needsUpdate = true
+}
 
 /* ---------------- ROI state ---------------- */
 
@@ -398,10 +425,10 @@ function loadImageDataUrl(dataUrl) {
 }
 
 /**
- * ✅ UPDATED: 3D planes should show ONLY CT (no segmentation overlay on planes)
- * We keep the same function signature so nothing else breaks.
+ * ✅ 3D planes show ONLY CT (no seg overlay)
+ * We keep segDataUrl arg so your calls don't break, but we ignore it.
  */
-async function updatePlaneTexture(axis, ctDataUrl, segDataUrl) {
+async function updatePlaneTexture(axis, ctDataUrl /* segDataUrl ignored */) {
   const canvas =
     axis === 'axial' ? axialTexCanvas :
     axis === 'sagittal' ? sagittalTexCanvas :
@@ -419,9 +446,6 @@ async function updatePlaneTexture(axis, ctDataUrl, segDataUrl) {
   const ctImg = await loadImageDataUrl(ctDataUrl)
   if (!ctImg) return
 
-  // IMPORTANT: we intentionally DO NOT load/draw segImg in 3D planes
-  // const segImg = segDataUrl ? await loadImageDataUrl(segDataUrl) : null
-
   canvas.width = ctImg.naturalWidth || ctImg.width
   canvas.height = ctImg.naturalHeight || ctImg.height
 
@@ -433,33 +457,17 @@ async function updatePlaneTexture(axis, ctDataUrl, segDataUrl) {
     ctx.translate(0, canvas.height)
     ctx.scale(1, -1)
     ctx.drawImage(ctImg, 0, 0, canvas.width, canvas.height)
-    // if (segImg) ctx.drawImage(segImg, 0, 0, canvas.width, canvas.height)
     ctx.restore()
   } else {
     ctx.drawImage(ctImg, 0, 0, canvas.width, canvas.height)
-    // if (segImg) ctx.drawImage(segImg, 0, 0, canvas.width, canvas.height)
   }
 
   tex.needsUpdate = true
 }
 
-/**
- * Voxel-space positioning:
- * Scene axes:
- *   X = volume width (W)
- *   Y = volume height (H)
- *   Z = volume depth (D)
- * We keep everything centered at (0,0,0) by subtracting centers.
- */
 function updatePlanePosition(axis, index) {
   if (!shape.value) return
-  const D = shape.value.depth
-  const H = shape.value.height
-  const W = shape.value.width
-
-  const cx = (W - 1) / 2
-  const cy = (H - 1) / 2
-  const cz = (D - 1) / 2
+  const { cx, cy, cz } = getVolumeCenters()
 
   if (axis === 'axial' && axialPlane) {
     axialPlane.position.set(0, 0, index - cz)
@@ -472,24 +480,24 @@ function updatePlanePosition(axis, index) {
   }
 }
 
-/**
- * Create / recreate slice planes whenever we load a new CT volume.
- * Planes are translucent so mesh is still visible.
- */
+function disposePlane(p) {
+  if (!p) return
+  if (p.geometry) p.geometry.dispose()
+  if (p.material && p.material.map) p.material.map.dispose()
+  if (p.material) p.material.dispose()
+}
+
 function rebuildSlicePlanes() {
   if (!scene || !shape.value) return
 
-  // remove old planes
-  for (const p of [axialPlane, sagittalPlane, coronalPlane]) {
-    if (p) scene.remove(p)
-  }
-  axialPlane = sagittalPlane = coronalPlane = null
+  // remove old planes cleanly
+  if (axialPlane) { scene.remove(axialPlane); disposePlane(axialPlane) }
+  if (coronalPlane) { scene.remove(coronalPlane); disposePlane(coronalPlane) }
+  if (sagittalPlane) { scene.remove(sagittalPlane); disposePlane(sagittalPlane) }
+  axialPlane = coronalPlane = sagittalPlane = null
 
-  const D = shape.value.depth
-  const H = shape.value.height
-  const W = shape.value.width
+  const { W, H, D } = getVolumeCenters()
 
-  // (re)create textures
   axialTex = new THREE.CanvasTexture(axialTexCanvas)
   sagittalTex = new THREE.CanvasTexture(sagittalTexCanvas)
   coronalTex = new THREE.CanvasTexture(coronalTexCanvas)
@@ -503,33 +511,38 @@ function rebuildSlicePlanes() {
   const matCommon = (tex) => new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    opacity: 0.91,
-    depthWrite: true,
+    opacity: 0.40,         // ✅ your requested opacity
+    depthWrite: false,     // prevents weird z-fighting with mesh
+    depthTest: true,
     side: THREE.DoubleSide
   })
 
-  // Axial: XY plane (W x H), move along Z 
-  axialPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), matCommon(axialTex)) 
+  // Axial: XY plane (W x H), move along Z
+  axialPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), matCommon(axialTex))
+  axialPlane.renderOrder = 2
   scene.add(axialPlane)
-  
+
   // Coronal: XZ plane (W x D), move along Y
   coronalPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, D), matCommon(coronalTex))
   coronalPlane.rotation.x = -Math.PI / 2
+  coronalPlane.renderOrder = 2
   scene.add(coronalPlane)
 
-  // Sagittal: YZ plane (D x H) after rotate, move along X
+  // Sagittal: YZ plane (D x H), move along X
   sagittalPlane = new THREE.Mesh(new THREE.PlaneGeometry(D, H), matCommon(sagittalTex))
   sagittalPlane.rotation.y = Math.PI / 2
+  sagittalPlane.renderOrder = 2
   scene.add(sagittalPlane)
 
+  // positions
   updatePlanePosition('axial', axialIndex.value)
   updatePlanePosition('coronal', coronalIndex.value)
   updatePlanePosition('sagittal', sagittalIndex.value)
 
-  // ✅ now planes update CT only (seg args ignored inside updatePlaneTexture)
-  updatePlaneTexture('axial', axialImg.value, axialSegImg.value)
-  updatePlaneTexture('coronal', coronalImg.value, coronalSegImg.value)
-  updatePlaneTexture('sagittal', sagittalImg.value, sagittalSegImg.value)
+  // textures (CT only)
+  updatePlaneTexture('axial', axialImg.value)
+  updatePlaneTexture('coronal', coronalImg.value)
+  updatePlaneTexture('sagittal', sagittalImg.value)
 }
 
 /* ---------------- File list ---------------- */
@@ -587,7 +600,12 @@ async function loadVolume() {
     resizeAllRoiCanvases()
 
     initThreeIfNeeded()
+
+    // ✅ bring back realtime CT planes in 3D
     rebuildSlicePlanes()
+
+    // ✅ if mesh already loaded, keep clipping synced
+    updateMeshClippingPlanes()
 
     statusMessage.value = 'CT volume loaded.'
   } catch (err) {
@@ -612,6 +630,7 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
       wl: 40
     })
     if (res.data.error) throw new Error(res.data.error)
+
     targetCtRef.value = b64ToDataUrl(res.data.png_ct)
     targetSegRef.value = b64ToDataUrl(res.data.png_seg)
 
@@ -619,16 +638,20 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
     resizeAllRoiCanvases()
     redrawRois(axis)
 
+    // ✅ update CT planes in 3D (realtime)
     if (axis === 'axial') {
       updatePlanePosition('axial', index)
-      await updatePlaneTexture('axial', axialImg.value, axialSegImg.value)
+      await updatePlaneTexture('axial', axialImg.value)
     } else if (axis === 'sagittal') {
       updatePlanePosition('sagittal', index)
-      await updatePlaneTexture('sagittal', sagittalImg.value, sagittalSegImg.value)
+      await updatePlaneTexture('sagittal', sagittalImg.value)
     } else if (axis === 'coronal') {
       updatePlanePosition('coronal', index)
-      await updatePlaneTexture('coronal', coronalImg.value, coronalSegImg.value)
+      await updatePlaneTexture('coronal', coronalImg.value)
     }
+
+    // ✅ true mesh clipping (realtime)
+    updateMeshClippingPlanes()
   } catch (err) {
     console.error(err)
     statusMessage.value = 'Failed to fetch slice: ' + err.message
@@ -775,6 +798,10 @@ function initThreeIfNeeded() {
 
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(clientWidth, clientHeight)
+
+  // ✅ required for true clipping
+  renderer.localClippingEnabled = true
+
   container.appendChild(renderer.domElement)
 
   const light1 = new THREE.DirectionalLight(0xffffff, 0.9)
@@ -841,6 +868,7 @@ async function loadMesh() {
       const vb = vertices[b]
       const vc = vertices[c]
 
+      // map (z,y,x) -> (x,y,z)
       positions[idx++] = va[2]
       positions[idx++] = va[1]
       positions[idx++] = va[0]
@@ -863,25 +891,29 @@ async function loadMesh() {
       mesh.material.dispose()
     }
 
-    mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshStandardMaterial({
-        color: 0x22c55e,
-        metalness: 0.1,
-        roughness: 0.5,
-        transparent: true,
-        opacity: 0.85
-      })
-    )
+    // ✅ IMPORTANT: center mesh by VOLUME center (so it aligns with slice indices + planes)
+    const { cx, cy, cz } = getVolumeCenters()
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x22c55e,
+      metalness: 0.1,
+      roughness: 0.5,
+      transparent: true,
+      opacity: 0.85,
 
-    geometry.computeBoundingBox()
-    const bbox = geometry.boundingBox
-    const center = new THREE.Vector3()
-    bbox.getCenter(center)
-    mesh.position.sub(center)
+      // ✅ true clipping
+      clippingPlanes: [clipAxial, clipCoronal, clipSagittal],
+      clipIntersection: true
+    })
+
+    mesh = new THREE.Mesh(geometry, mat)
+    mesh.position.set(-cx, -cy, -cz) // align with volume-centered space
     scene.add(mesh)
 
+    // ✅ ensure planes exist too (the combination part)
     rebuildSlicePlanes()
+
+    // ✅ sync clipping to current slider positions
+    updateMeshClippingPlanes()
 
     statusMessage.value = '3D mesh loaded.'
   } catch (err) {
@@ -904,6 +936,16 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
   if (animationId) cancelAnimationFrame(animationId)
+
+  if (axialPlane) disposePlane(axialPlane)
+  if (coronalPlane) disposePlane(coronalPlane)
+  if (sagittalPlane) disposePlane(sagittalPlane)
+
+  if (mesh) {
+    mesh.geometry.dispose()
+    mesh.material.dispose()
+  }
+
   if (renderer && renderer.domElement && renderer.domElement.parentNode) {
     renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
