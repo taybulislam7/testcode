@@ -1,5 +1,3 @@
-#showImg-3D slicer
-
 <template>
   <div class="viewer-page">
     <!-- Header / Source selection -->
@@ -96,8 +94,7 @@
           <span>Axial (z)</span>
           <span class="index-label">z = {{ axialIndex }} / {{ shape.depth - 1 }}</span>
         </div>
-
-        <div class="slice-frame" ref="axialFrame">
+        <div class="slice-frame">
           <img
             v-if="axialImg"
             :src="axialImg"
@@ -120,7 +117,6 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
-
         <div class="slider-row">
           <label class="slider-label">Axial (z)</label>
           <input
@@ -141,14 +137,6 @@
             v-model.number="zoomAxial"
           />
         </div>
-
-        <!-- ROI controls (axial) -->
-        <div class="row" style="margin-top: 8px;">
-          <button class="small-btn" @click="undoRoi('axial')" :disabled="!canUndo('axial')">Undo</button>
-          <button class="small-btn" @click="redoRoi('axial')" :disabled="!canRedo('axial')">Redo</button>
-          <button class="small-btn" @click="clearRoi('axial')" :disabled="axialRois.length === 0">Clear</button>
-          <button class="secondary-btn" @click="exportView('axial')" :disabled="!axialImg">Export</button>
-        </div>
       </div>
 
       <!-- Sagittal -->
@@ -157,8 +145,7 @@
           <span>Sagittal (x)</span>
           <span class="index-label">x = {{ sagittalIndex }} / {{ shape.width - 1 }}</span>
         </div>
-
-        <div class="slice-frame" ref="sagittalFrame">
+        <div class="slice-frame">
           <img
             v-if="sagittalImg"
             :src="sagittalImg"
@@ -181,7 +168,6 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
-
         <div class="slider-row">
           <label class="slider-label">Sagittal (x)</label>
           <input
@@ -202,14 +188,6 @@
             v-model.number="zoomSagittal"
           />
         </div>
-
-        <!-- ROI controls (sagittal) -->
-        <div class="row" style="margin-top: 8px;">
-          <button class="small-btn" @click="undoRoi('sagittal')" :disabled="!canUndo('sagittal')">Undo</button>
-          <button class="small-btn" @click="redoRoi('sagittal')" :disabled="!canRedo('sagittal')">Redo</button>
-          <button class="small-btn" @click="clearRoi('sagittal')" :disabled="sagittalRois.length === 0">Clear</button>
-          <button class="secondary-btn" @click="exportView('sagittal')" :disabled="!sagittalImg">Export</button>
-        </div>
       </div>
 
       <!-- Coronal -->
@@ -218,8 +196,7 @@
           <span>Coronal (y)</span>
           <span class="index-label">y = {{ coronalIndex }} / {{ shape.height - 1 }}</span>
         </div>
-
-        <div class="slice-frame" ref="coronalFrame">
+        <div class="slice-frame">
           <img
             v-if="coronalImg"
             :src="coronalImg"
@@ -242,7 +219,6 @@
             @mouseleave="onRoiMouseUp"
           ></canvas>
         </div>
-
         <div class="slider-row">
           <label class="slider-label">Coronal (y)</label>
           <input
@@ -262,14 +238,6 @@
             step="0.01"
             v-model.number="zoomCoronal"
           />
-        </div>
-
-        <!-- ROI controls (coronal) -->
-        <div class="row" style="margin-top: 8px;">
-          <button class="small-btn" @click="undoRoi('coronal')" :disabled="!canUndo('coronal')">Undo</button>
-          <button class="small-btn" @click="redoRoi('coronal')" :disabled="!canRedo('coronal')">Redo</button>
-          <button class="small-btn" @click="clearRoi('coronal')" :disabled="coronalRois.length === 0">Clear</button>
-          <button class="secondary-btn" @click="exportView('coronal')" :disabled="!coronalImg">Export</button>
         </div>
       </div>
 
@@ -324,10 +292,10 @@ const axialSegImg = ref(null)
 const sagittalSegImg = ref(null)
 const coronalSegImg = ref(null)
 
-/* ---------------- Upload refs (matching UI) ---------------- */
+/* ---------------- Upload refs ---------------- */
 
-const ctFolderInput = ref(null)  // folder for CT
-const segFileInput = ref(null)   // single file for seg
+const ctFolderInput = ref(null)
+const segFileInput = ref(null)
 
 function triggerCtFolderSelect() {
   ctFolderInput.value && ctFolderInput.value.click()
@@ -384,11 +352,21 @@ let mesh = null
 let controls = null
 let animationId = null
 
-/* ---------------- ROI state ---------------- */
+// NEW: slice planes + textures
+let axialPlane = null
+let sagittalPlane = null
+let coronalPlane = null
 
-const axialFrame = ref(null)
-const sagittalFrame = ref(null)
-const coronalFrame = ref(null)
+let axialTex = null
+let sagittalTex = null
+let coronalTex = null
+
+// cached offscreen canvases for textures (faster realtime)
+const axialTexCanvas = document.createElement('canvas')
+const sagittalTexCanvas = document.createElement('canvas')
+const coronalTexCanvas = document.createElement('canvas')
+
+/* ---------------- ROI state ---------------- */
 
 const axialCanvas = ref(null)
 const sagittalCanvas = ref(null)
@@ -402,76 +380,156 @@ const isDrawing = ref(false)
 const currentRoi = ref([])
 const activeView = ref(null)
 
-/* ---- Undo/Redo stacks (NEW) ---- */
-const undoStack = ref({
-  axial: [],
-  sagittal: [],
-  coronal: []
-})
-const redoStack = ref({
-  axial: [],
-  sagittal: [],
-  coronal: []
-})
-
-function snapshotRois(view) {
-  // deep copy of polygons
-  if (view === 'axial') return JSON.stringify(axialRois.value)
-  if (view === 'sagittal') return JSON.stringify(sagittalRois.value)
-  return JSON.stringify(coronalRois.value)
-}
-
-function restoreRois(view, snapshot) {
-  const arr = snapshot ? JSON.parse(snapshot) : []
-  if (view === 'axial') axialRois.value = arr
-  else if (view === 'sagittal') sagittalRois.value = arr
-  else coronalRois.value = arr
-  nextTick(() => {
-    resizeAllRoiCanvases()
-    redrawRois(view)
-  })
-}
-
-function pushUndo(view) {
-  undoStack.value[view].push(snapshotRois(view))
-  // new action => clear redo
-  redoStack.value[view] = []
-}
-
-function canUndo(view) {
-  return undoStack.value[view].length > 0
-}
-function canRedo(view) {
-  return redoStack.value[view].length > 0
-}
-
-function undoRoi(view) {
-  if (!canUndo(view)) return
-  redoStack.value[view].push(snapshotRois(view))
-  const prev = undoStack.value[view].pop()
-  restoreRois(view, prev)
-}
-
-function redoRoi(view) {
-  if (!canRedo(view)) return
-  undoStack.value[view].push(snapshotRois(view))
-  const nxt = redoStack.value[view].pop()
-  restoreRois(view, nxt)
-}
-
-function clearRoi(view) {
-  pushUndo(view)
-  if (view === 'axial') axialRois.value = []
-  else if (view === 'sagittal') sagittalRois.value = []
-  else coronalRois.value = []
-  redrawRois(view)
-}
-
 /* ---------------- helpers ---------------- */
 
 function b64ToDataUrl(b64) {
   if (!b64) return null
   return 'data:image/png;base64,' + b64
+}
+
+function loadImageDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    if (!dataUrl) return resolve(null)
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = dataUrl
+  })
+}
+
+/**
+ * ✅ UPDATED: 3D planes should show ONLY CT (no segmentation overlay on planes)
+ * We keep the same function signature so nothing else breaks.
+ */
+async function updatePlaneTexture(axis, ctDataUrl, segDataUrl) {
+  const canvas =
+    axis === 'axial' ? axialTexCanvas :
+    axis === 'sagittal' ? sagittalTexCanvas :
+    coronalTexCanvas
+
+  const tex =
+    axis === 'axial' ? axialTex :
+    axis === 'sagittal' ? sagittalTex :
+    coronalTex
+
+  if (!tex) return
+
+  const flipYForView = (axis === 'sagittal' || axis === 'coronal')
+
+  const ctImg = await loadImageDataUrl(ctDataUrl)
+  if (!ctImg) return
+
+  // IMPORTANT: we intentionally DO NOT load/draw segImg in 3D planes
+  // const segImg = segDataUrl ? await loadImageDataUrl(segDataUrl) : null
+
+  canvas.width = ctImg.naturalWidth || ctImg.width
+  canvas.height = ctImg.naturalHeight || ctImg.height
+
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  if (flipYForView) {
+    ctx.save()
+    ctx.translate(0, canvas.height)
+    ctx.scale(1, -1)
+    ctx.drawImage(ctImg, 0, 0, canvas.width, canvas.height)
+    // if (segImg) ctx.drawImage(segImg, 0, 0, canvas.width, canvas.height)
+    ctx.restore()
+  } else {
+    ctx.drawImage(ctImg, 0, 0, canvas.width, canvas.height)
+    // if (segImg) ctx.drawImage(segImg, 0, 0, canvas.width, canvas.height)
+  }
+
+  tex.needsUpdate = true
+}
+
+/**
+ * Voxel-space positioning:
+ * Scene axes:
+ *   X = volume width (W)
+ *   Y = volume height (H)
+ *   Z = volume depth (D)
+ * We keep everything centered at (0,0,0) by subtracting centers.
+ */
+function updatePlanePosition(axis, index) {
+  if (!shape.value) return
+  const D = shape.value.depth
+  const H = shape.value.height
+  const W = shape.value.width
+
+  const cx = (W - 1) / 2
+  const cy = (H - 1) / 2
+  const cz = (D - 1) / 2
+
+  if (axis === 'axial' && axialPlane) {
+    axialPlane.position.set(0, 0, index - cz)
+  }
+  if (axis === 'coronal' && coronalPlane) {
+    coronalPlane.position.set(0, index - cy, 0)
+  }
+  if (axis === 'sagittal' && sagittalPlane) {
+    sagittalPlane.position.set(index - cx, 0, 0)
+  }
+}
+
+/**
+ * Create / recreate slice planes whenever we load a new CT volume.
+ * Planes are translucent so mesh is still visible.
+ */
+function rebuildSlicePlanes() {
+  if (!scene || !shape.value) return
+
+  // remove old planes
+  for (const p of [axialPlane, sagittalPlane, coronalPlane]) {
+    if (p) scene.remove(p)
+  }
+  axialPlane = sagittalPlane = coronalPlane = null
+
+  const D = shape.value.depth
+  const H = shape.value.height
+  const W = shape.value.width
+
+  // (re)create textures
+  axialTex = new THREE.CanvasTexture(axialTexCanvas)
+  sagittalTex = new THREE.CanvasTexture(sagittalTexCanvas)
+  coronalTex = new THREE.CanvasTexture(coronalTexCanvas)
+
+  for (const t of [axialTex, sagittalTex, coronalTex]) {
+    t.minFilter = THREE.LinearFilter
+    t.magFilter = THREE.LinearFilter
+    t.generateMipmaps = false
+  }
+
+  const matCommon = (tex) => new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    opacity: 0.91,
+    depthWrite: true,
+    side: THREE.DoubleSide
+  })
+
+  // Axial: XY plane (W x H), move along Z 
+  axialPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), matCommon(axialTex)) 
+  scene.add(axialPlane)
+  
+  // Coronal: XZ plane (W x D), move along Y
+  coronalPlane = new THREE.Mesh(new THREE.PlaneGeometry(W, D), matCommon(coronalTex))
+  coronalPlane.rotation.x = -Math.PI / 2
+  scene.add(coronalPlane)
+
+  // Sagittal: YZ plane (D x H) after rotate, move along X
+  sagittalPlane = new THREE.Mesh(new THREE.PlaneGeometry(D, H), matCommon(sagittalTex))
+  sagittalPlane.rotation.y = Math.PI / 2
+  scene.add(sagittalPlane)
+
+  updatePlanePosition('axial', axialIndex.value)
+  updatePlanePosition('coronal', coronalIndex.value)
+  updatePlanePosition('sagittal', sagittalIndex.value)
+
+  // ✅ now planes update CT only (seg args ignored inside updatePlaneTexture)
+  updatePlaneTexture('axial', axialImg.value, axialSegImg.value)
+  updatePlaneTexture('coronal', coronalImg.value, coronalSegImg.value)
+  updatePlaneTexture('sagittal', sagittalImg.value, sagittalSegImg.value)
 }
 
 /* ---------------- File list ---------------- */
@@ -521,16 +579,15 @@ async function loadVolume() {
     sagittalSegImg.value = b64ToDataUrl(res.data.sagittal_seg_png)
     coronalSegImg.value = b64ToDataUrl(res.data.coronal_seg_png)
 
-    // reset ROIs + history
     axialRois.value = []
     sagittalRois.value = []
     coronalRois.value = []
 
-    undoStack.value = { axial: [], sagittal: [], coronal: [] }
-    redoStack.value = { axial: [], sagittal: [], coronal: [] }
-
     await nextTick()
     resizeAllRoiCanvases()
+
+    initThreeIfNeeded()
+    rebuildSlicePlanes()
 
     statusMessage.value = 'CT volume loaded.'
   } catch (err) {
@@ -561,6 +618,17 @@ async function fetchSlice(axis, index, targetCtRef, targetSegRef) {
     await nextTick()
     resizeAllRoiCanvases()
     redrawRois(axis)
+
+    if (axis === 'axial') {
+      updatePlanePosition('axial', index)
+      await updatePlaneTexture('axial', axialImg.value, axialSegImg.value)
+    } else if (axis === 'sagittal') {
+      updatePlanePosition('sagittal', index)
+      await updatePlaneTexture('sagittal', sagittalImg.value, sagittalSegImg.value)
+    } else if (axis === 'coronal') {
+      updatePlanePosition('coronal', index)
+      await updatePlaneTexture('coronal', coronalImg.value, coronalSegImg.value)
+    }
   } catch (err) {
     console.error(err)
     statusMessage.value = 'Failed to fetch slice: ' + err.message
@@ -630,7 +698,9 @@ function redrawRois(view) {
     if (!path || path.length < 2) continue
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
+    for (let i = 1; i < path.length; i++) {
+      ctx.lineTo(path[i].x, path[i].y)
+    }
     ctx.closePath()
     ctx.stroke()
     ctx.fill()
@@ -640,7 +710,9 @@ function redrawRois(view) {
     const path = currentRoi.value
     ctx.beginPath()
     ctx.moveTo(path[0].x, path[0].y)
-    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
+    for (let i = 1; i < path.length; i++) {
+      ctx.lineTo(path[i].x, path[i].y)
+    }
     ctx.stroke()
   }
 }
@@ -649,9 +721,6 @@ function onRoiMouseDown(view, event) {
   if (event.button !== 0) return
   const { canvas } = getCanvasAndCtx(view)
   if (!canvas) return
-
-  // snapshot BEFORE starting a new ROI (NEW)
-  pushUndo(view)
 
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
@@ -680,105 +749,13 @@ function onRoiMouseMove(event) {
 function onRoiMouseUp() {
   if (!isDrawing.value || !activeView.value) return
   const roisRef = getRoisRef(activeView.value)
-
   if (currentRoi.value.length > 2) {
     roisRef.value = [...roisRef.value, [...currentRoi.value]]
-  } else {
-    // if user clicked tiny ROI, revert undo snapshot (optional)
-    // easiest: just allow undo to bring back anyway
   }
-
   isDrawing.value = false
   redrawRois(activeView.value)
-
   activeView.value = null
   currentRoi.value = []
-}
-
-/* ---------------- Export (NEW) ---------------- */
-
-function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve(img)
-    img.onerror = reject
-    img.src = src
-  })
-}
-
-function getFrameSize(view) {
-  const frame =
-    view === 'axial' ? axialFrame.value :
-    view === 'sagittal' ? sagittalFrame.value :
-    coronalFrame.value
-  if (!frame) return { w: 0, h: 0 }
-  return { w: frame.clientWidth, h: frame.clientHeight }
-}
-
-function getCtSegSrc(view) {
-  if (view === 'axial') return { ct: axialImg.value, seg: axialSegImg.value, zoom: zoomAxial.value }
-  if (view === 'sagittal') return { ct: sagittalImg.value, seg: sagittalSegImg.value, zoom: zoomSagittal.value }
-  return { ct: coronalImg.value, seg: coronalSegImg.value, zoom: zoomCoronal.value }
-}
-
-function getRoiCanvas(view) {
-  if (view === 'axial') return axialCanvas.value
-  if (view === 'sagittal') return sagittalCanvas.value
-  return coronalCanvas.value
-}
-
-async function exportView(view) {
-  try {
-    const { w, h } = getFrameSize(view)
-    if (!w || !h) return
-
-    const { ct, seg, zoom } = getCtSegSrc(view)
-    if (!ct) return
-
-    const out = document.createElement('canvas')
-    out.width = w
-    out.height = h
-    const ctx = out.getContext('2d')
-
-    // draw CT + seg with same "visual" transforms
-    const ctImg = await loadImage(ct)
-    let segImg = null
-    if (seg) segImg = await loadImage(seg)
-
-    if (view === 'axial') {
-      // centered scale(zoom)
-      ctx.save()
-      ctx.translate(w / 2, h / 2)
-      ctx.scale(zoom, zoom)
-      ctx.drawImage(ctImg, -w / 2, -h / 2, w, h)
-      if (segImg) ctx.drawImage(segImg, -w / 2, -h / 2, w, h)
-      ctx.restore()
-    } else {
-      // sagittal/coronal: translate(-50%,-50%), width=300%, height=200%, scaleY(-1), scale(zoom)
-      const drawW = w * 3
-      const drawH = h * 2
-
-      ctx.save()
-      ctx.translate(w / 2, h / 2)
-      ctx.scale(zoom, zoom)
-      ctx.scale(1, -1) // scaleY(-1)
-      ctx.drawImage(ctImg, -drawW / 2, -drawH / 2, drawW, drawH)
-      if (segImg) ctx.drawImage(segImg, -drawW / 2, -drawH / 2, drawW, drawH)
-      ctx.restore()
-    }
-
-    // ROI canvas is already "screen coords" -> draw on top
-    const roiC = getRoiCanvas(view)
-    if (roiC) ctx.drawImage(roiC, 0, 0, w, h)
-
-    const a = document.createElement('a')
-    a.download = `${view}_export.png`
-    a.href = out.toDataURL('image/png')
-    a.click()
-  } catch (err) {
-    console.error(err)
-    statusMessage.value = 'Export failed: ' + err.message
-  }
 }
 
 /* ---------------- 3D viewer ---------------- */
@@ -793,8 +770,8 @@ function initThreeIfNeeded() {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x020617)
 
-  camera = new THREE.PerspectiveCamera(40, clientWidth / clientHeight, 0.1, 2000)
-  camera.position.set(0, 0, 300)
+  camera = new THREE.PerspectiveCamera(40, clientWidth / clientHeight, 0.1, 5000)
+  camera.position.set(0, 0, 350)
 
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(clientWidth, clientHeight)
@@ -807,8 +784,8 @@ function initThreeIfNeeded() {
   const light2 = new THREE.AmbientLight(0xffffff, 0.3)
   scene.add(light2)
 
-  const grid = new THREE.GridHelper(200, 10, 0x4b5563, 0x1f2937)
-  grid.position.y = -100
+  const grid = new THREE.GridHelper(240, 12, 0x4b5563, 0x1f2937)
+  grid.position.y = -120
   scene.add(grid)
 
   controls = new OrbitControls(camera, renderer.domElement)
@@ -903,6 +880,8 @@ async function loadMesh() {
     bbox.getCenter(center)
     mesh.position.sub(center)
     scene.add(mesh)
+
+    rebuildSlicePlanes()
 
     statusMessage.value = '3D mesh loaded.'
   } catch (err) {
