@@ -1,4 +1,4 @@
-/*this is for segmentation, it requires app1.py
+// this is for segmentation, it requires app1.py
 
 <template>
   <div>
